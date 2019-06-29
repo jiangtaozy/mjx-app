@@ -6,8 +6,10 @@
 
 import 'package:flutter/material.dart';
 import 'package:flutter_webrtc/webrtc.dart';
+import 'dart:io';
 import 'dart:core';
 import 'dart:async';
+import 'signaling.dart';
 
 class Classroom extends StatefulWidget {
 
@@ -18,58 +20,31 @@ class Classroom extends StatefulWidget {
 
 class ClassroomState extends State<Classroom> {
 
-  MediaStream localStream;
-  RTCPeerConnection peerConnection;
-  final localRenderer = new RTCVideoRenderer();
-  final remoteRenderer = new RTCVideoRenderer();
+  Signaling signaling;
+  String displayName =
+    Platform.localHostname + '(' + Platform.operatingSystem + ')';
+  List<dynamic> peers;
+  var selfId;
+  RTCVideoRenderer localRenderer = new RTCVideoRenderer();
+  RTCVideoRenderer remoteRenderer = new RTCVideoRenderer();
   bool inCalling = false;
-  Timer timer;
+  final String serverIP = '192.168.1.112';
 
   @override
   initState() {
     super.initState();
     initRenderers();
+    connect();
   }
 
   @override
   deactivate() {
     super.deactivate();
-    if(inCalling) {
-      hangUp();
+    if(signaling != null) {
+      signaling.close();
     }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      body: Container(
-        child: Stack(
-          children: [
-            Align(
-              alignment: const FractionalOffset(0.5, 0.1),
-              child: Container(
-                width: 320.0,
-                height: 240.0,
-                child: RTCVideoView(localRenderer),
-              ),
-            ),
-            Align(
-              alignment: const FractionalOffset(0.5, 0.9),
-              child: Container(
-                width: 320.0,
-                height: 240.0,
-                child: RTCVideoView(remoteRenderer),
-              ),
-            ),
-          ],
-        ),
-      ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: inCalling ? hangUp : makeCall,
-        tooltip: inCalling ? '挂断' : '通话',
-        child: Icon(inCalling ? Icons.call_end : Icons.phone),
-      ),
-    );
+    localRenderer.dispose();
+    remoteRenderer.dispose();
   }
 
   initRenderers() async {
@@ -77,132 +52,181 @@ class ClassroomState extends State<Classroom> {
     await remoteRenderer.initialize();
   }
 
-  makeCall() async {
-    final Map<String, dynamic> mediaConstraints = {
-      'audio': true,
-      'video': {
-        'mandatory': {
-          'minWidth': '640',
-          'minHeight': '480',
-          'minFrameRate': '30',
-        },
-        'facingMode': 'user',
-        'optional': [],
-      },
-    };
-    Map<String, dynamic> configuration = {
-      'iceServers': [
-        {
-          'url': 'stun:stun.l.google.com:19302',
-        },
-      ],
-    };
-    final Map<String, dynamic> offerSDPConstraints = {
-      'mandatory': {
-        'OfferToReceiveAudio': true,
-        'OfferToReceiveVideo': true,
-      },
-      'optional': [],
-    };
-    final Map<String, dynamic> loopbackConstraints = {
-      'mandatory': {},
-      'optional': [
-        {
-          'DtlsSrtpKeyAgreement': false,
-        },
-      ],
-    };
-    if(peerConnection != null) return;
-    try {
-      localStream = await navigator.getUserMedia(mediaConstraints);
-      localRenderer.srcObject = localStream;
-      peerConnection =
-      await createPeerConnection(configuration, loopbackConstraints);
-      peerConnection.onSignalingState = onSignalingState;
-      peerConnection.onIceGatheringState = onIceGatheringState;
-      peerConnection.onIceConnectionState = onIceConnectionState;
-      peerConnection.onAddStream = onAddStream;
-      peerConnection.onRemoveStream = onRemoveStream;
-      peerConnection.onIceCandidate = onCandidate;
-      peerConnection.onRenegotiationNeeded = onRenegotiationNeeded;
-      peerConnection.addStream(localStream);
-      RTCSessionDescription description =
-      await peerConnection.createOffer(offerSDPConstraints);
-      print('sdp: ${description.sdp}');
-      peerConnection.setLocalDescription(description);
-      description.type = 'answer';
-      peerConnection.setRemoteDescription(description);
-      //timer = new Timer.periodic(Duration(seconds: 1), handleStatsReport);
-      setState(() {
-        inCalling = true;
-      });
-    }
-    catch(e) {
-      print(e.toString());
-    }
-  }
-
-  hangUp() async {
-    try {
-      await localStream.dispose();
-      await peerConnection.close();
-      peerConnection = null;
-      localRenderer.srcObject = null;
-      remoteRenderer.srcObject = null;
-    }
-    catch(e) {
-      print(e.toString());
-    }
-    setState(() {
-      inCalling = false;
-    });
-  }
-
-  void handleStatsReport(Timer timer) async {
-    if(peerConnection != null) {
-      List<StatsReport> reports = await peerConnection.getStats(null);
-      reports.forEach((report) {
-        print('report => { ');
-        print('    id: ${report.id},');
-        print('    type: ${report.type}');
-        print('    timestamp: ${report.timestamp},');
-        print('    values => {');
-        report.values.forEach((key, value) {
-          print('        ${key}: ${value},');
+  void connect() async {
+    if(signaling == null) {
+      signaling = new Signaling(serverIP, displayName)
+        ..connect();
+      signaling.onStateChange = (SignalingState state) {
+        switch(state) {
+          case SignalingState.CallStateNew:
+            this.setState(() {
+              inCalling = true;
+            });
+            break;
+          case SignalingState.CallStateBye:
+            this.setState(() {
+              localRenderer.srcObject = null;
+              remoteRenderer.srcObject = null;
+              inCalling = false;
+            });
+            break;
+          case SignalingState.CallStateInvite:
+          case SignalingState.CallStateConnected:
+          case SignalingState.CallStateRinging:
+          case SignalingState.ConnectionClosed:
+          case SignalingState.ConnectionError:
+          case SignalingState.ConnectionOpen:
+            break;
+        }
+      };
+      signaling.onPeersUpdate = ((event) {
+        this.setState(() {
+          selfId = event['self'];
+          peers = event['peers'];
         });
-        print('    }');
-        print('}');
+      });
+      signaling.onLocalStream = ((stream) {
+        localRenderer.srcObject = stream;
+      });
+      signaling.onAddRemoteStream = ((stream) {
+        remoteRenderer.srcObject = stream;
+      });
+      signaling.onRemoveRemoteStream = ((stream) {
+        remoteRenderer.srcObject = null;
       });
     }
   }
-
-  onSignalingState(RTCSignalingState state) {
-    print(state);
+  invitePeer(context, peerId, useScreen) async {
+    if(signaling != null && peerId != selfId) {
+      signaling.invite(peerId, 'video', useScreen);
+    }
+  }
+    
+  hangUp() {
+    if(signaling != null) {
+      signaling.bye();
+    }
   }
 
-  onIceGatheringState(RTCIceGatheringState state) {
-    print(state);
+  switchCamera() {
+    signaling.switchCamera();
   }
 
-  onIceConnectionState(RTCIceConnectionState state) {
-    print(state);
+  muteMic() {
   }
 
-  onAddStream(MediaStream stream) {
-    print('addStream.id: ${stream.id}');
-    remoteRenderer.srcObject = stream;
+  buildRow(context, peer) {
+    var self = (peer['id'] == selfId);
+    return ListBody(
+      children: <Widget>[
+        ListTile(
+          title: Text(self
+            ? peer['name'] + '[Your self]'
+            : peer['name'] + '[' + peer['user_agent'] + ']'),
+          onTap: null,
+          trailing: new SizedBox(
+            width: 100.0,
+            child: new Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: <Widget>[
+                IconButton(
+                  icon: Icon(Icons.videocam),
+                  onPressed: () => invitePeer(context, peer['id'], false),
+                  tooltip: 'Video calling',
+                ),
+                IconButton(
+                  icon: Icon(Icons.screen_share),
+                  onPressed: () => invitePeer(context, peer['id'], true),
+                  tooltip: 'Screen sharing',
+                ),
+              ],
+            ),
+          ),
+          subtitle: Text('id: ' + peer['id']),
+        ),
+        Divider(),
+      ]
+    );
   }
 
-  onRemoveStream(MediaStream stream) {
-    remoteRenderer.srcObject = null;
-  }
-
-  onCandidate(RTCIceCandidate candidate) {
-    print('onCandidate: ${candidate.candidate}');
-    peerConnection.addCandidate(candidate);
-  }
-
-  onRenegotiationNeeded() {
-    print('RenegotiationNeeded');
+  @override
+  Widget build(BuildContext context) {
+    return new Scaffold(
+      appBar: new AppBar(
+        title: new Text('P2P Call Sample'),
+        actions: <Widget>[
+          IconButton(
+            icon: const Icon(Icons.settings),
+            onPressed: null,
+            tooltip: 'setup',
+          ),
+        ],
+      ),
+      floatingActionButtonLocation: FloatingActionButtonLocation.centerFloat,
+      floatingActionButton: inCalling
+        ? new SizedBox(
+          width: 200.0,
+          child: new Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: <Widget>[
+              FloatingActionButton(
+                child: const Icon(Icons.switch_camera),
+                onPressed: switchCamera,
+              ),
+              FloatingActionButton(
+                child: new Icon(Icons.call_end),
+                onPressed: hangUp,
+                tooltip: 'Hangup',
+                backgroundColor: Colors.pink,
+              ),
+              FloatingActionButton(
+                child: const Icon(Icons.mic_off),
+                onPressed: muteMic,
+              )
+            ],
+          ),
+        )
+        : null,
+      body: inCalling
+        ? OrientationBuilder(builder: (context, orientation) {
+          return new Container(
+            child: new Stack(
+              children: <Widget>[
+                new Positioned(
+                  left: 0.0,
+                  right: 0.0,
+                  top: 0.0,
+                  bottom: 0.0,
+                  child: new Container(
+                    margin: new EdgeInsets.fromLTRB(0.0, 0.0, 0.0, 0.0),
+                    width: MediaQuery.of(context).size.width,
+                    height: MediaQuery.of(context).size.height,
+                    child: new RTCVideoView(remoteRenderer),
+                    decoration: new BoxDecoration(color: Colors.black54),
+                  ),
+                ),
+                new Positioned(
+                  left: 10.0,
+                  top: 10.0,
+                  child: new Container(
+                    width: orientation == Orientation.portrait ? 90.0 : 120.0,
+                    height: orientation == Orientation.portrait ? 120.0 : 90.0,
+                    child: new RTCVideoView(localRenderer),
+                    decoration: new BoxDecoration(color: Colors.black54),
+                  ),
+                ),
+              ],
+            ),
+          );
+        })
+        : new ListView.builder(
+          shrinkWrap: true,
+          padding: const EdgeInsets.all(0.0),
+          itemCount: (peers != null ? peers.length : 0),
+          itemBuilder: (context, i) {
+            return buildRow(context, peers[i]);
+          },
+        )
+    );
   }
 }
