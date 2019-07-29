@@ -5,10 +5,9 @@
  */
 
 import 'dart:convert';
-
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
 
+import 'package:http/http.dart' as http;
 import 'config.dart';
 
 class School extends StatefulWidget {
@@ -90,7 +89,7 @@ class SchoolState extends State<School> {
         throw Exception('Failed to load post');
       }
     } else {
-      print('没有更多了');
+      //print('没有更多了');
     }
   }
   @override
@@ -100,6 +99,12 @@ class SchoolState extends State<School> {
         if(i < teacherList.length) {
           final teacher = teacherList[i];
           Map<String, dynamic> node = teacher['node'];
+          if(node['backgroundImage'] == null || node['backgroundImage'].isEmpty) {
+            node['backgroundImage'] = 'https://destpact.com/image/one-piece.jpg';
+          }
+          if(node['avatar'] == null || node['avatar'].isEmpty) {
+            node['avatar'] = 'https://destpact.com/icon/avatar-8a-128.svg';
+          }
           return Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
